@@ -779,7 +779,8 @@ function logActivity(id, type, text) {
   if (!p) return;
   p.activity.push({ date: todayStr(), type, text });
   // Bump New Lead -> Contacted automatically on first real activity.
-  if (p.status === 'New Lead' && (type === 'email' || type === 'call')) p.status = 'Contacted';
+  if (type === 'visit' && (p.status === 'New Lead' || p.status === 'Contacted')) p.status = 'Engaged';
+  else if (p.status === 'New Lead' && (type === 'email' || type === 'call')) p.status = 'Contacted';
   // Suggest next follow-up 7 days out unless one is already set in the future.
   const suggested = addDays(todayStr(), 7);
   if (!p.nextFollowUp || p.nextFollowUp < todayStr()) p.nextFollowUp = suggested;
@@ -804,6 +805,11 @@ function quickLogEmail(id) {
   const notes = prompt('Any notes on this email? (optional — leave blank to just log it)');
   const text = (notes && notes.trim()) ? `Email sent \u2014 ${notes.trim()}` : 'Cold-call email sent';
   logActivity(id, 'email', text);
+}
+function quickLogVisit(id) {
+  const notes = prompt('How did the visit go? (optional — leave blank to just log it)');
+  const text = (notes && notes.trim()) ? `F2F visit \u2014 ${notes.trim()}` : 'Face-to-face visit made';
+  logActivity(id, 'visit', text);
 }
 
 function addNote(id, inputEl) {
@@ -1134,6 +1140,7 @@ function cardHtml(p) {
       <div class="quick-actions">
         <button class="qa-btn" onclick="quickLogCall('${p.id}')">\u260E\uFE0F Call made</button>
         <button class="qa-btn" onclick="quickLogEmail('${p.id}')">\u2709\uFE0F Email sent</button>
+        <button class="qa-btn" onclick="quickLogVisit('${p.id}')">\uD83E\uDD1D F2F visit</button>
         <button class="qa-btn promote" onclick="generateQuote('${p.id}')">${p.clientId ? '\u2192 Open quote builder' : '\u2192 Generate quote'}</button>
         <button class="qa-btn" onclick="promoteToClient('${p.id}')">Complete client details</button>
         <button class="qa-btn lost" onclick="openLostModal('${p.id}')">Mark lost</button>
