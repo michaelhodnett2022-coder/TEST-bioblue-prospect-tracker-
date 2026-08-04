@@ -513,10 +513,14 @@ async function mintClientId(p) {
   const set = (col, val) => { const i = headers.indexOf(col); if (i > -1) targetRow[i] = val; };
   set('Client ID', newId);
   set('Billing Entity', p.company || '');
+  set('Descriptor', p.descriptor || '');
   set('Street Address', p.streetAddress || '');
   set('Suburb', p.suburb || '');
   set('State', p.state || '');
   set('Postcode', p.postcode || '');
+  set('Product Interest', p.productInterest || '');
+  set('Current Supplier', p.currentSupplier || '');
+  set('Estimated Volume', p.estimatedVolume || '');
   set('Business Contact Name', p.contactName || '');
   set('Business Contact Role', p.contactRole || '');
   set('Business Contact Email', p.contactEmail || '');
@@ -525,6 +529,10 @@ async function mintClientId(p) {
   set('KDM Role', p.contact2Role || '');
   set('KDM Email', p.contact2Email || '');
   set('KDM Phone', p.contact2Phone || '');
+  set('Other Contact Label', p.contact3Label || '');
+  set('Other Contact Name', p.contact3Name || '');
+  set('Other Contact Email', p.contact3Email || '');
+  set('Other Contact Phone', p.contact3Phone || '');
   set('BDM Email', 'michael.hodnett@bioblue.com.au');
   set('Prospect \u2713', '\u2713');
   set('Record Status', 'Prospect');
@@ -935,7 +943,32 @@ function cardHtml(p) {
         </div>
         <div></div>
       </div>
-      <div style="margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:rgba(255,255,255,0.35);">Contact 1</div>
+      <div class="p-field-row">
+        <div>
+          <label>Descriptor</label>
+          <input type="text" value="${escapeHtml(p.descriptor||'')}" placeholder="Business name" onchange="updateField('${p.id}','descriptor',this.value)">
+        </div>
+        <div></div>
+      </div>
+      <div style="margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:rgba(255,255,255,0.35);">Sales info</div>
+      <div class="p-field-row">
+        <div>
+          <label>Product interest</label>
+          <input type="text" value="${escapeHtml(p.productInterest||'')}" onchange="updateField('${p.id}','productInterest',this.value)">
+        </div>
+        <div>
+          <label>Current supplier</label>
+          <input type="text" value="${escapeHtml(p.currentSupplier||'')}" onchange="updateField('${p.id}','currentSupplier',this.value)">
+        </div>
+      </div>
+      <div class="p-field-row">
+        <div>
+          <label>Estimated volume</label>
+          <input type="text" value="${escapeHtml(p.estimatedVolume||'')}" placeholder="e.g. 5,000L/month" onchange="updateField('${p.id}','estimatedVolume',this.value)">
+        </div>
+        <div></div>
+      </div>
+      <div style="margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:rgba(255,255,255,0.35);">Site contact</div>
       <div class="p-field-row">
         <div>
           <label>Name</label>
@@ -956,7 +989,7 @@ function cardHtml(p) {
           <input type="text" value="${escapeHtml(p.contactEmail||'')}" onchange="updateField('${p.id}','contactEmail',this.value)">
         </div>
       </div>
-      <div style="margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:rgba(255,255,255,0.35);">Contact 2 (optional)</div>
+      <div style="margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:rgba(255,255,255,0.35);">Key decision maker (optional)</div>
       <div class="p-field-row">
         <div>
           <label>Name</label>
@@ -975,6 +1008,27 @@ function cardHtml(p) {
         <div>
           <label>Email</label>
           <input type="text" value="${escapeHtml(p.contact2Email||'')}" onchange="updateField('${p.id}','contact2Email',this.value)">
+        </div>
+      </div>
+      <div style="margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:rgba(255,255,255,0.35);">Other (optional)</div>
+      <div class="p-field-row">
+        <div>
+          <label>Label</label>
+          <input type="text" value="${escapeHtml(p.contact3Label||'')}" placeholder="e.g. Accounts, Broker" onchange="updateField('${p.id}','contact3Label',this.value)">
+        </div>
+        <div>
+          <label>Name</label>
+          <input type="text" value="${escapeHtml(p.contact3Name||'')}" onchange="updateField('${p.id}','contact3Name',this.value)">
+        </div>
+      </div>
+      <div class="p-field-row">
+        <div>
+          <label>Phone</label>
+          <input type="text" value="${escapeHtml(p.contact3Phone||'')}" onchange="updateField('${p.id}','contact3Phone',this.value)">
+        </div>
+        <div>
+          <label>Email</label>
+          <input type="text" value="${escapeHtml(p.contact3Email||'')}" onchange="updateField('${p.id}','contact3Email',this.value)">
         </div>
       </div>
       <div class="p-field-row">
