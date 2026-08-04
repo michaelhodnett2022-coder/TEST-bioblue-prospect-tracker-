@@ -216,7 +216,12 @@ body {
 
 <div class="auth-bar">
   <div class="auth-status" id="authStatus">Tap Load to fetch your prospects</div>
+  <button class="btn btn-ghost" onclick="manualSave()">\uD83D\uDCBE Save</button>
   <button class="btn btn-primary" onclick="loadTracker()">&#9729;&#65039; Load</button>
+</div>
+<div id="saveStatus" style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;padding:6px 4px 14px;color:rgba(255,255,255,0.4);">
+  <span id="saveStatusDot" style="width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,0.3);flex-shrink:0;"></span>
+  <span id="saveStatusText">Not connected &mdash; edits will not save until you tap Load</span>
 </div>
 
 <div class="new-lead-card">
@@ -331,6 +336,16 @@ function uid() { return 'PT-' + Date.now() + '-' + Math.random().toString(36).sl
 // AUTH + LOAD
 // =====================================================================
 function setAuthStatus(msg) { document.getElementById('authStatus').textContent = msg; }
+
+function setSaveStatus(state, text) {
+  const dot = document.getElementById('saveStatusDot');
+  const label = document.getElementById('saveStatusText');
+  if (!dot || !label) return;
+  const colors = { saved: '#4ADE80', saving: '#fbbf24', error: '#f87171', off: 'rgba(255,255,255,0.3)' };
+  dot.style.background = colors[state] || colors.off;
+  label.textContent = text;
+  label.style.color = state === 'off' ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.7)';
+}
 
 async function ensureToken() {
   if (gdriveToken) return;
@@ -592,13 +607,7 @@ async function generateQuote(id) {
 
 async function getTrackerFileId() {
   if (trackerFileId) return trackerFileId;
-  const rf = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name='${GDRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id)`,
-    { headers: { Authorization: `Bearer ${gdriveToken}` } }
-  );
-  const rd = await rf.json();
-  if (!rd.files || !rd.files.length) throw new Error('BioBlue Audits folder not found');
-  const rootId = rd.files[0].id;
+  const rootId = await getDriveRootId();
 
   const adminId   = await getOrCreateFolder(rootId, 'ADMIN DATA - DO NOT REMOVE');
   const trackerId = await getOrCreateFolder(adminId, TRACKER_SUBFOLDER);
@@ -626,6 +635,7 @@ async function getTrackerFileId() {
 
 async function loadTracker() {
   setAuthStatus('\uD83D\uDD10 Connecting to Google...');
+  setSaveStatus('saving', 'Connecting...');
   try {
     await ensureToken();
     setAuthStatus('\uD83D\uDCC2 Fetching prospects...');
@@ -634,19 +644,27 @@ async function loadTracker() {
     const text = await dl.text();
     prospects = text.trim() ? JSON.parse(text) : [];
     setAuthStatus(`\u2705 ${prospects.length} prospect${prospects.length!==1?'s':''} loaded`);
+    setSaveStatus('saved', 'Connected \u2014 edits save automatically');
     render();
   } catch (e) {
     gdriveToken = null;
     setAuthStatus('\u274C ' + e.message);
+    setSaveStatus('error', 'Not connected \u2014 tap Load to retry');
   }
 }
 
 async function saveTracker() {
-  if (!gdriveToken || !trackerFileId) { showToast('Tap Load first to connect'); return; }
+  if (!gdriveToken || !trackerFileId) {
+    setSaveStatus('error', 'Not connected \u2014 tap Load, your edits are not saved yet');
+    showToast('Tap Load first to connect');
+    return false;
+  }
   // Coalesce rapid successive saves (e.g. two quick taps) into one write —
   // last state always wins, matches the documented storage limitation.
-  if (saveInFlight) { saveQueued = true; return; }
+  if (saveInFlight) { saveQueued = true; return true; }
   saveInFlight = true;
+  setSaveStatus('saving', 'Saving...');
+  let ok = false;
   try {
     const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${trackerFileId}?uploadType=media`, {
       method: 'PATCH',
@@ -654,12 +672,26 @@ async function saveTracker() {
       body: JSON.stringify(prospects)
     });
     if (!res.ok) throw new Error('Save failed (' + res.status + ')');
+    setSaveStatus('saved', 'Saved \u2014 ' + new Date().toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }));
+    ok = true;
   } catch (e) {
+    setSaveStatus('error', 'Save failed \u2014 will retry on your next edit');
     showToast('\u26A0\uFE0F Save failed — ' + e.message);
   } finally {
     saveInFlight = false;
     if (saveQueued) { saveQueued = false; saveTracker(); }
   }
+  return ok;
+}
+
+// Explicit manual save for the Save button — auto-save already fires on
+// every field edit, this is purely for peace of mind: tap it, get a direct
+// yes/no. Reuses saveTracker() rather than duplicating the write logic, so
+// there's still only one place that actually talks to Drive.
+async function manualSave() {
+  if (!gdriveToken || !trackerFileId) { showToast('Tap Load first to connect'); return; }
+  const ok = await saveTracker();
+  if (ok) showToast('\u2705 Saved');
 }
 
 // =====================================================================
