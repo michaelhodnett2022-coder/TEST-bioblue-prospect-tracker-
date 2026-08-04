@@ -128,6 +128,7 @@ body {
 .p-followup.overdue { color:#f87171; }
 .p-followup.today { color:#fbbf24; }
 .p-followup.upcoming { color:#a8d4f5; }
+.p-followup.nodate { color:rgba(255,255,255,0.4); }
 
 .p-detail { display:none;margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.1); }
 .p-detail.open { display:block; }
@@ -264,6 +265,8 @@ body {
   </select>
 </div>
 
+<div class="filter-bar" id="stageStrip"></div>
+
 <div id="dashboard"></div>
 
 <div class="section-label lost" id="lostToggle" onclick="toggleLostSection()">
@@ -331,6 +334,7 @@ let trackerFileId = null;
 let prospects = [];
 let stateFilter = 'ALL';
 let bdmFilter = 'ALL';
+let stageFilter = 'ALL';
 let searchFilter = '';
 // "Acting as" — whichever BDM is using the app right now. Defaults new
 // leads to this person, persisted per-browser so it doesn't need resetting
@@ -1041,6 +1045,22 @@ function setBdmFilter(name) {
   render();
 }
 
+// Clicking the already-active stage clears the filter, same toggle pattern
+// as the state pills.
+function setStageFilter(s) {
+  stageFilter = (stageFilter === s) ? 'ALL' : s;
+  render();
+}
+
+function renderStageStrip(counts) {
+  const strip = document.getElementById('stageStrip');
+  if (!strip) return;
+  const stages = STATUS_ORDER.filter(s => s !== 'Lost');
+  strip.innerHTML = stages.map(s =>
+    `<button class="filter-pill${stageFilter===s?' active':''}" onclick="setStageFilter('${s}')">${s} (${counts[s]||0})</button>`
+  ).join('');
+}
+
 // "Acting as" changes who new leads get assigned to — persisted per browser
 // so it doesn't reset every visit. Deliberately does not touch existing
 // prospects' bdm field, only the default for anything added from here on.
@@ -1076,6 +1096,10 @@ function toggleLostSection() {
   document.getElementById('lostChevron').textContent = open ? '\u25BE' : '\u25B8';
 }
 
+function daysBetween(a, b) {
+  return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+}
+
 function bucketFor(p) {
   if (!p.nextFollowUp) return 'nodate';
   if (p.nextFollowUp < todayStr()) return 'overdue';
@@ -1090,10 +1114,10 @@ function statusOptionsHtml(current) {
 function cardHtml(p) {
   const accent = STATUS_COLORS[p.status] || '#64d2ff';
   const bucket = bucketFor(p);
-  const followUpClass = bucket === 'overdue' ? 'overdue' : bucket === 'today' ? 'today' : 'upcoming';
+  const followUpClass = bucket === 'overdue' ? 'overdue' : bucket === 'today' ? 'today' : bucket === 'nodate' ? 'nodate' : 'upcoming';
   const followUpLabel = p.nextFollowUp
-    ? (bucket === 'overdue' ? 'Overdue — was due ' : bucket === 'today' ? 'Due today' : 'Due ') + (bucket !== 'today' ? fmtDate(p.nextFollowUp) : '')
-    : 'No follow-up set';
+    ? (bucket === 'overdue' ? `Overdue by ${daysBetween(p.nextFollowUp, todayStr())} day${daysBetween(p.nextFollowUp, todayStr())!==1?'s':''}` : bucket === 'today' ? 'Due today' : 'Due ' + fmtDate(p.nextFollowUp))
+    : (p.createdDate ? `No follow-up set \u2014 added ${daysBetween(p.createdDate, todayStr())} day${daysBetween(p.createdDate, todayStr())!==1?'s':''} ago` : 'No follow-up set');
   const activityHtml = (p.activity || []).slice().reverse().map(a => `
     <div class="activity-entry">
       <div class="activity-date">${fmtDate(a.date)}</div>
@@ -1276,6 +1300,7 @@ function render() {
   const visible = prospects.filter(p => {
     if (stateFilter !== 'ALL' && p.state !== stateFilter) return false;
     if (bdmFilter !== 'ALL' && p.bdm !== bdmFilter) return false;
+    if (stageFilter !== 'ALL' && p.status !== stageFilter) return false;
     if (searchFilter) {
       const haystack = (p.company + ' ' + (p.contactName || '')).toLowerCase();
       if (!haystack.includes(searchFilter)) return false;
@@ -1285,10 +1310,36 @@ function render() {
   const active = visible.filter(p => p.status !== 'Lost');
   const lost   = visible.filter(p => p.status === 'Lost');
 
-  const overdue  = active.filter(p => bucketFor(p) === 'overdue');
-  const today    = active.filter(p => bucketFor(p) === 'today');
-  const upcoming = active.filter(p => bucketFor(p) === 'upcoming').sort((a,b) => a.nextFollowUp.localeCompare(b.nextFollowUp));
-  const nodate   = active.filter(p => bucketFor(p) === 'nodate');
+  // Stage strip counts reflect State/BDM/search but deliberately NOT the
+  // stage filter itself — otherwise selecting one stage would zero out the
+  // counts for every other stage, and there'd be no way to see them to
+  // switch. Lost is excluded here too, it has its own section below.
+  const forCounts = prospects.filter(p => {
+    if (stateFilter !== 'ALL' && p.state !== stateFilter) return false;
+    if (bdmFilter !== 'ALL' && p.bdm !== bdmFilter) return false;
+    if (searchFilter) {
+      const haystack = (p.company + ' ' + (p.contactName || '')).toLowerCase();
+      if (!haystack.includes(searchFilter)) return false;
+    }
+    return p.status !== 'Lost';
+  });
+  const stageCounts = {};
+  STATUS_ORDER.filter(s => s !== 'Lost').forEach(s => { stageCounts[s] = forCounts.filter(p => p.status === s).length; });
+  renderStageStrip(stageCounts);
+
+  // With a stage selected, sort every bucket newest-added-first instead of
+  // by follow-up urgency — you're already looking at one stage, so "what's
+  // most recent" matters more than "what's most overdue" within it. With
+  // no stage selected, keep the original urgency-first behaviour.
+  const byFollowUpAsc = (a,b) => a.nextFollowUp.localeCompare(b.nextFollowUp);
+  const byCreatedOldest = (a,b) => (a.createdDate||'').localeCompare(b.createdDate||'');
+  const byCreatedNewest = (a,b) => (b.createdDate||'').localeCompare(a.createdDate||'');
+  const stageActive = stageFilter !== 'ALL';
+
+  const overdue  = active.filter(p => bucketFor(p) === 'overdue').sort(stageActive ? byCreatedNewest : byFollowUpAsc);
+  const today    = active.filter(p => bucketFor(p) === 'today').sort(stageActive ? byCreatedNewest : (() => 0));
+  const upcoming = active.filter(p => bucketFor(p) === 'upcoming').sort(stageActive ? byCreatedNewest : byFollowUpAsc);
+  const nodate   = active.filter(p => bucketFor(p) === 'nodate').sort(stageActive ? byCreatedNewest : byCreatedOldest);
 
   const section = (label, cls, list) => {
     if (!list.length) return '';
@@ -1299,9 +1350,9 @@ function render() {
   const dash = document.getElementById('dashboard');
   const html = section('Overdue','overdue',overdue) + section('Due today','today',today) +
                section('Upcoming','upcoming',upcoming) + section('No follow-up set','nodate',nodate);
-  const filterActive = stateFilter !== 'ALL' || !!searchFilter;
+  const filterActive = stateFilter !== 'ALL' || bdmFilter !== 'ALL' || stageFilter !== 'ALL' || !!searchFilter;
   const emptyMsg = filterActive
-    ? `No prospects match ${searchFilter ? `"${searchFilter}"` : 'that filter'} — try clearing the search or switching state.`
+    ? `No prospects match ${searchFilter ? `"${searchFilter}"` : 'that filter'} — try clearing the search or switching filters.`
     : 'No active prospects yet — add one above, or tap Load if you already have some in Drive.';
   dash.innerHTML = html || `<div class="empty-note">${emptyMsg}</div>`;
 
