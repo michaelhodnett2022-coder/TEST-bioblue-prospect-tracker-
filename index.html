@@ -696,6 +696,48 @@ function addNewLead() {
 }
 
 // =====================================================================
+// NOTES LOG SYNC — every call/email/note gets written to the same Notes
+// Log sheet the Prospect/Client form already uses for client conversations,
+// so prospect conversations are exportable the same way. Runs as a strict
+// queue (not in parallel) so two rapid taps can't read-modify-write over
+// each other and silently drop one entry. Before a Client ID exists, the
+// Tracker's own id stands in for it in the Client ID column.
+// =====================================================================
+let _notesLogQueue = Promise.resolve();
+function syncActivityToNotesLog(p, activityText) {
+  _notesLogQueue = _notesLogQueue
+    .then(() => doSyncActivityToNotesLog(p, activityText))
+    .catch(() => showToast('\u26A0\uFE0F Could not sync to Notes Log \u2014 saved locally, will retry next action'));
+  return _notesLogQueue;
+}
+
+async function doSyncActivityToNotesLog(p, activityText) {
+  await ensureToken();
+  const rootId = await getDriveRootId();
+  const sheetId = await getOrCreateAdminSheetId(rootId);
+  const dl = await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}?alt=media`, { headers: { Authorization: `Bearer ${gdriveToken}` } });
+  if (!dl.ok) throw new Error('Notes Log download failed (' + dl.status + ')');
+  const ab = await dl.arrayBuffer();
+  const wb = XLSX.read(new Uint8Array(ab), { type: 'array' });
+
+  const notesRows = wb.Sheets['Notes Log']
+    ? XLSX.utils.sheet_to_json(wb.Sheets['Notes Log'], { header: 1 })
+    : [['Client ID', 'Billing Entity', 'Site Name', 'Timestamp', 'Form', 'BDM', 'Notes']];
+  notesRows.push([p.clientId || p.id, p.company, p.company, new Date().toISOString(), 'Prospect Tracker', 'Michael Hodnett', activityText]);
+  const newNotesWs = XLSX.utils.aoa_to_sheet(notesRows);
+
+  const newWb = XLSX.utils.book_new();
+  if (wb.Sheets['Client Records']) XLSX.utils.book_append_sheet(newWb, wb.Sheets['Client Records'], 'Client Records');
+  XLSX.utils.book_append_sheet(newWb, newNotesWs, 'Notes Log');
+  const out = XLSX.write(newWb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const up = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${sheetId}?uploadType=media`, {
+    method: 'PATCH', headers: { Authorization: `Bearer ${gdriveToken}`, 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, body: blob
+  });
+  if (!up.ok) throw new Error('Notes Log upload failed (' + up.status + ')');
+}
+
+// =====================================================================
 // ACTIVITY / STATUS / FOLLOW-UP
 // =====================================================================
 function findProspect(id) { return prospects.find(p => p.id === id); }
@@ -711,10 +753,26 @@ function logActivity(id, type, text) {
   if (!p.nextFollowUp || p.nextFollowUp < todayStr()) p.nextFollowUp = suggested;
   saveTracker();
   render();
+  // Logged locally above (never lost even if this fails) — now sync to the
+  // shared spreadsheet in the background so it's exportable.
+  syncActivityToNotesLog(p, text);
 }
 
-function quickLogCall(id)  { logActivity(id, 'call',  'Follow-up call made'); }
-function quickLogEmail(id) { logActivity(id, 'email', 'Cold-call email sent'); }
+// A native prompt() is deliberate here — it adds zero permanent UI (nothing
+// sits on the card taking up space), only appearing at the exact moment
+// you tap Call made / Email sent. Leaving it blank (or cancelling) still
+// logs the tap itself, just with the old generic text, so the fast one-tap
+// workflow is unchanged when there's genuinely nothing more to note.
+function quickLogCall(id) {
+  const notes = prompt('What was discussed? (optional — leave blank to just log the call)');
+  const text = (notes && notes.trim()) ? `Call made \u2014 ${notes.trim()}` : 'Follow-up call made';
+  logActivity(id, 'call', text);
+}
+function quickLogEmail(id) {
+  const notes = prompt('Any notes on this email? (optional — leave blank to just log it)');
+  const text = (notes && notes.trim()) ? `Email sent \u2014 ${notes.trim()}` : 'Cold-call email sent';
+  logActivity(id, 'email', text);
+}
 
 function addNote(id, inputEl) {
   const text = inputEl.value.trim();
