@@ -224,6 +224,12 @@ body {
   <span id="saveStatusText">Not connected &mdash; edits will not save until you tap Load</span>
 </div>
 
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+  <label style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.5);white-space:nowrap;">Acting as</label>
+  <select id="actingAsBDM" onchange="setCurrentBDM(this.value)" style="flex:1;padding:8px 10px;border-radius:8px;border:1.5px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:white;font-family:'DM Sans',sans-serif;font-size:12.5px;">
+  </select>
+</div>
+
 <div class="new-lead-card">
   <div class="new-lead-title" id="newLeadToggle" onclick="toggleNewLead()">
     <span>+ Add new lead</span><span id="newLeadChevron">&#9662;</span>
@@ -253,6 +259,9 @@ body {
   <button class="filter-pill active" data-state="ALL" onclick="setStateFilter('ALL')">All</button>
   <button class="filter-pill" data-state="WA" onclick="setStateFilter('WA')">WA</button>
   <button class="filter-pill" data-state="NT" onclick="setStateFilter('NT')">NT</button>
+  <select id="bdmFilterSelect" onchange="setBdmFilter(this.value)" style="padding:6px 10px;border-radius:20px;border:1.5px solid rgba(255,255,255,0.2);background:transparent;color:rgba(255,255,255,0.7);font-size:12px;font-weight:700;font-family:'DM Sans',sans-serif;">
+    <option value="ALL">All BDMs</option>
+  </select>
 </div>
 
 <div id="dashboard"></div>
@@ -305,11 +314,28 @@ const STATUS_COLORS = {
   'Quoted':'#fbbf24','Negotiating':'#fb923c','Won':'#22c55e','Lost':'#f87171'
 };
 
+// Same roster, names, and emails already used across the rest of the suite
+// (Quote Builder etc.) — kept identical so BDM values written here match
+// exactly what those forms expect, no remapping needed anywhere downstream.
+const BDM_EMAILS = {
+  'Michael Hodnett': 'michael.hodnett@bioblue.com.au',
+  'Derek Page':       'derek.page@bioblue.com.au',
+  'Angelo Sayas':     'angelo.sayas@bioblue.com.au',
+  'Kevin Goverd':      'kevin.goverd@bioblue.com.au',
+  'Brad Ryan':         'brad@bioblue.com.au',
+};
+const BDM_LIST = Object.keys(BDM_EMAILS);
+
 let gdriveToken = null;
 let trackerFileId = null;
 let prospects = [];
 let stateFilter = 'ALL';
+let bdmFilter = 'ALL';
 let searchFilter = '';
+// "Acting as" — whichever BDM is using the app right now. Defaults new
+// leads to this person, persisted per-browser so it doesn't need resetting
+// every visit. Separate from bdmFilter, which is just what's shown.
+let currentBDM = sessionStorage.getItem('bb_tracker_bdm') || 'Michael Hodnett';
 let saveInFlight = false;
 let saveQueued = false;
 
@@ -402,32 +428,32 @@ function getSeedProspects() {
   const plus7 = addDays(today, 7);
   return [
     { id: uid(), company:'Varley Transport', state:'WA', contactName:'', contactPhone:'', contactEmail:'',
-      status:'New Lead', activity:[], nextFollowUp:null, lostReason:null, createdDate:today, clientId:null },
+      bdm:'Michael Hodnett', status:'New Lead', activity:[], nextFollowUp:null, lostReason:null, createdDate:today, clientId:null },
     { id: uid(), company:'Sands Refrigeration', state:'WA', contactName:'', contactPhone:'', contactEmail:'',
-      status:'Quoted', activity:[
+      bdm:'Michael Hodnett', status:'Quoted', activity:[
         {date:today,type:'email',text:'Cold-call email sent'},
         {date:today,type:'call',text:'Follow-up call made'},
         {date:today,type:'note',text:'Quotes supplied, continue to follow-up'}
       ], nextFollowUp:plus7, lostReason:null, createdDate:today, clientId:null },
     { id: uid(), company:'Fenix', state:'WA', contactName:'', contactPhone:'', contactEmail:'',
-      status:'Contacted', activity:[
+      bdm:'Michael Hodnett', status:'Contacted', activity:[
         {date:today,type:'email',text:'Cold-call email sent'},
         {date:today,type:'note',text:'Need to follow-up with phone call'}
       ], nextFollowUp:plus7, lostReason:null, createdDate:today, clientId:null },
     { id: uid(), company:'McMan Bennett', state:'WA', contactName:'Michael McNeill', contactPhone:'', contactEmail:'',
-      status:'Engaged', activity:[
+      bdm:'Michael Hodnett', status:'Engaged', activity:[
         {date:today,type:'email',text:'Cold-call email sent'},
         {date:today,type:'call',text:'Follow-up call made'},
         {date:today,type:'note',text:'Follow-up with Michael McNeill on 17 August'}
       ], nextFollowUp:'2026-08-17', lostReason:null, createdDate:today, clientId:null },
     { id: uid(), company:'Flexi Trans', state:'WA', contactName:'Darren', contactPhone:'', contactEmail:'',
-      status:'Contacted', activity:[
+      bdm:'Michael Hodnett', status:'Contacted', activity:[
         {date:today,type:'email',text:'Cold-call email sent'},
         {date:today,type:'call',text:'Left one message for Darren'},
         {date:today,type:'note',text:'Follow-up again'}
       ], nextFollowUp:plus7, lostReason:null, createdDate:today, clientId:null },
     { id: uid(), company:'Swan Transit', state:'WA', contactName:'', contactPhone:'', contactEmail:'',
-      status:'New Lead', activity:[], nextFollowUp:null, lostReason:null, createdDate:today, clientId:null }
+      bdm:'Michael Hodnett', status:'New Lead', activity:[], nextFollowUp:null, lostReason:null, createdDate:today, clientId:null }
   ];
 }
 
@@ -535,7 +561,7 @@ async function mintClientId(p) {
   set('Postcode', p.postcode || '');
   set('Product Interest', p.productInterest || '');
   set('Current Supplier', p.currentSupplier || '');
-  set('Estimated Volume', p.estimatedVolume || '');
+  set('Estimated Volume', p.estimatedVolumeLitres ? `${p.estimatedVolumeLitres}L per ${p.estimatedVolumePeriod === 'annum' ? 'annum' : 'month'}` : '');
   set('Business Contact Name', p.contactName || '');
   set('Business Contact Role', p.contactRole || '');
   set('Business Contact Email', p.contactEmail || '');
@@ -548,7 +574,7 @@ async function mintClientId(p) {
   set('Other Contact Name', p.contact3Name || '');
   set('Other Contact Email', p.contact3Email || '');
   set('Other Contact Phone', p.contact3Phone || '');
-  set('BDM Email', 'michael.hodnett@bioblue.com.au');
+  set('BDM Email', BDM_EMAILS[p.bdm] || BDM_EMAILS['Michael Hodnett']);
   set('Prospect \u2713', '\u2713');
   set('Record Status', 'Prospect');
   set('Drive Folder ID', clientFolderId);
@@ -710,6 +736,7 @@ function addNewLead() {
     id: uid(),
     company,
     state: document.getElementById('nlState').value,
+    bdm: currentBDM,
     contactName: document.getElementById('nlContactName').value.trim(),
     contactPhone: document.getElementById('nlContactPhone').value.trim(),
     contactEmail: document.getElementById('nlContactEmail').value.trim(),
@@ -755,7 +782,7 @@ async function doSyncActivityToNotesLog(p, activityText) {
   const notesRows = wb.Sheets['Notes Log']
     ? XLSX.utils.sheet_to_json(wb.Sheets['Notes Log'], { header: 1 })
     : [['Client ID', 'Billing Entity', 'Site Name', 'Timestamp', 'Form', 'BDM', 'Notes']];
-  notesRows.push([p.clientId || p.id, p.company, p.company, new Date().toISOString(), 'Prospect Tracker', 'Michael Hodnett', activityText]);
+  notesRows.push([p.clientId || p.id, p.company, p.company, new Date().toISOString(), 'Prospect Tracker', p.bdm || 'Michael Hodnett', activityText]);
   const newNotesWs = XLSX.utils.aoa_to_sheet(notesRows);
 
   const newWb = XLSX.utils.book_new();
@@ -892,7 +919,7 @@ function updateField(id, field, value) {
     const nameEl = card.querySelector('.p-company');
     const metaEl = card.querySelector('.p-meta');
     if (nameEl) nameEl.textContent = p.company;
-    if (metaEl) metaEl.textContent = `${p.state}${p.contactName ? ' · ' + p.contactName : ''}`;
+    if (metaEl) metaEl.textContent = `${p.state}${p.bdm ? ' · ' + p.bdm : ''}${p.contactName ? ' · ' + p.contactName : ''}`;
   }
 }
 
@@ -958,6 +985,30 @@ function setStateFilter(s) {
   render();
 }
 
+function setBdmFilter(name) {
+  bdmFilter = name;
+  render();
+}
+
+// "Acting as" changes who new leads get assigned to — persisted per browser
+// so it doesn't reset every visit. Deliberately does not touch existing
+// prospects' bdm field, only the default for anything added from here on.
+function setCurrentBDM(name) {
+  currentBDM = name;
+  sessionStorage.setItem('bb_tracker_bdm', name);
+}
+
+function populateBdmDropdowns() {
+  const actingAs = document.getElementById('actingAsBDM');
+  const filterSelect = document.getElementById('bdmFilterSelect');
+  if (actingAs) {
+    actingAs.innerHTML = BDM_LIST.map(n => `<option value="${n}" ${n===currentBDM?'selected':''}>${n}</option>`).join('');
+  }
+  if (filterSelect) {
+    filterSelect.innerHTML = '<option value="ALL">All BDMs</option>' + BDM_LIST.map(n => `<option value="${n}">${n}</option>`).join('');
+  }
+}
+
 function setSearchFilter(v) {
   searchFilter = (v || '').trim().toLowerCase();
   render();
@@ -1003,7 +1054,7 @@ function cardHtml(p) {
     <div class="p-card-top" onclick="toggleCard('${p.id}')">
       <div>
         <div class="p-company">${escapeHtml(p.company)}</div>
-        <div class="p-meta">${p.state}${p.contactName ? ' · ' + escapeHtml(p.contactName) : ''}</div>
+        <div class="p-meta">${p.state}${p.bdm ? ' · ' + escapeHtml(p.bdm) : ''}${p.contactName ? ' · ' + escapeHtml(p.contactName) : ''}</div>
         <div class="p-followup ${followUpClass}">${followUpLabel}</div>
       </div>
       <div class="p-status-badge">${p.status}</div>
@@ -1044,7 +1095,12 @@ function cardHtml(p) {
           <label>Descriptor</label>
           <input type="text" value="${escapeHtml(p.descriptor||'')}" placeholder="Business name" onchange="updateField('${p.id}','descriptor',this.value)">
         </div>
-        <div></div>
+        <div>
+          <label>BDM</label>
+          <select onchange="updateField('${p.id}','bdm',this.value)">
+            ${BDM_LIST.map(n => `<option value="${n}" ${p.bdm===n?'selected':''}>${n}</option>`).join('')}
+          </select>
+        </div>
       </div>
       <div style="margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:rgba(255,255,255,0.35);">Sales info</div>
       <div class="p-field-row">
@@ -1059,10 +1115,16 @@ function cardHtml(p) {
       </div>
       <div class="p-field-row">
         <div>
-          <label>Estimated volume</label>
-          <input type="text" value="${escapeHtml(p.estimatedVolume||'')}" placeholder="e.g. 5,000L/month" onchange="updateField('${p.id}','estimatedVolume',this.value)">
+          <label>Est. volume (litres)</label>
+          <input type="number" min="0" value="${p.estimatedVolumeLitres||''}" placeholder="e.g. 5000" onchange="updateField('${p.id}','estimatedVolumeLitres',this.value)">
         </div>
-        <div></div>
+        <div>
+          <label>Period</label>
+          <select onchange="updateField('${p.id}','estimatedVolumePeriod',this.value)">
+            <option value="month" ${p.estimatedVolumePeriod!=='annum'?'selected':''}>Per month</option>
+            <option value="annum" ${p.estimatedVolumePeriod==='annum'?'selected':''}>Per annum</option>
+          </select>
+        </div>
       </div>
       <div style="margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:rgba(255,255,255,0.35);">Site contact</div>
       <div class="p-field-row">
@@ -1162,6 +1224,7 @@ function escapeHtml(s) {
 function render() {
   const visible = prospects.filter(p => {
     if (stateFilter !== 'ALL' && p.state !== stateFilter) return false;
+    if (bdmFilter !== 'ALL' && p.bdm !== bdmFilter) return false;
     if (searchFilter) {
       const haystack = (p.company + ' ' + (p.contactName || '')).toLowerCase();
       if (!haystack.includes(searchFilter)) return false;
@@ -1197,6 +1260,7 @@ function render() {
     : '<div class="empty-note">Nothing marked lost yet</div>';
 }
 
+populateBdmDropdowns();
 render();
 </script>
 </body>
