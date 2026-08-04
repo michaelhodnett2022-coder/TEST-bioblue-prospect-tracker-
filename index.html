@@ -215,13 +215,13 @@ body {
 </div>
 
 <div class="auth-bar">
-  <div class="auth-status" id="authStatus">Tap Load to fetch your prospects</div>
+  <div class="auth-status" id="authStatus">Tap Load to see prospects already in Drive</div>
   <button class="btn btn-ghost" onclick="manualSave()">&#128190; Save</button>
   <button class="btn btn-primary" onclick="loadTracker()">&#9729;&#65039; Load</button>
 </div>
 <div id="saveStatus" style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;padding:6px 4px 14px;color:rgba(255,255,255,0.4);">
   <span id="saveStatusDot" style="width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,0.3);flex-shrink:0;"></span>
-  <span id="saveStatusText">Not connected &mdash; edits will not save until you tap Load</span>
+  <span id="saveStatusText">Not connected yet &mdash; will connect automatically on your first edit</span>
 </div>
 
 <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
@@ -659,30 +659,82 @@ async function getTrackerFileId() {
   return trackerFileId;
 }
 
-async function loadTracker() {
-  setAuthStatus('\uD83D\uDD10 Connecting to Google...');
-  setSaveStatus('saving', 'Connecting...');
+// Resolves gdriveToken + trackerFileId. Idempotent — if already connected
+// this session, returns instantly without a network call or a repeat
+// Google sign-in popup.
+async function connectDrive() {
+  if (gdriveToken && trackerFileId) return true;
   try {
+    setAuthStatus('\uD83D\uDD10 Connecting to Google...');
     await ensureToken();
-    setAuthStatus('\uD83D\uDCC2 Fetching prospects...');
-    const fileId = await getTrackerFileId();
-    const dl = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers: { Authorization: `Bearer ${gdriveToken}` } });
-    const text = await dl.text();
-    prospects = text.trim() ? JSON.parse(text) : [];
-    setAuthStatus(`\u2705 ${prospects.length} prospect${prospects.length!==1?'s':''} loaded`);
-    setSaveStatus('saved', 'Connected \u2014 edits save automatically');
-    render();
+    setAuthStatus('\uD83D\uDCC2 Locating your data...');
+    await getTrackerFileId();
+    return true;
   } catch (e) {
     gdriveToken = null;
+    setAuthStatus('\u274C ' + e.message);
+    return false;
+  }
+}
+
+// Fetches the Drive copy and merges it with whatever's in memory. The
+// merge matters: if a BDM has already added a lead locally (e.g. their
+// very first action this session, before any connection existed), that
+// entry won't be in the Drive copy yet — this keeps it rather than letting
+// the Drive fetch silently replace it. Always a real fetch, unlike
+// connectDrive() which short-circuits once already connected — this is
+// what makes Load useful as an explicit "pull the latest" even mid-session.
+async function fetchAndMergeProspects() {
+  const dl = await fetch(`https://www.googleapis.com/drive/v3/files/${trackerFileId}?alt=media`, { headers: { Authorization: `Bearer ${gdriveToken}` } });
+  if (!dl.ok) throw new Error('Fetch failed (' + dl.status + ')');
+  const text = await dl.text();
+  const driveProspects = text.trim() ? JSON.parse(text) : [];
+  const driveIds = new Set(driveProspects.map(p => p.id));
+  const localOnly = prospects.filter(p => !driveIds.has(p.id));
+  prospects = [...localOnly, ...driveProspects];
+  setAuthStatus(`\u2705 ${prospects.length} prospect${prospects.length!==1?'s':''} loaded`);
+  render();
+}
+
+// Explicit Load button — connect if needed, then always refresh, so it
+// doubles as "pick up anything a teammate added" even once already
+// connected, not just a first-time bootstrap step.
+async function loadTracker() {
+  setSaveStatus('saving', 'Connecting...');
+  const ok = await connectDrive();
+  if (!ok) { setSaveStatus('error', 'Not connected \u2014 tap Load to retry'); return; }
+  try {
+    await fetchAndMergeProspects();
+    setSaveStatus('saved', 'Connected \u2014 edits save automatically');
+  } catch (e) {
     setAuthStatus('\u274C ' + e.message);
     setSaveStatus('error', 'Not connected \u2014 tap Load to retry');
   }
 }
 
+// Auto-connect gate, called from inside saveTracker() itself — this is
+// what makes the app "BDM-proof": no one needs to remember to tap Load
+// before their first edit. First save of the session pays the cost of a
+// real connect + safe merge-fetch; every save after that in the same
+// session is already connected, so this returns instantly.
+async function ensureConnected() {
+  if (gdriveToken && trackerFileId) return true;
+  const ok = await connectDrive();
+  if (!ok) return false;
+  try {
+    await fetchAndMergeProspects();
+    return true;
+  } catch (e) {
+    setAuthStatus('\u274C ' + e.message);
+    return false;
+  }
+}
+
 async function saveTracker() {
-  if (!gdriveToken || !trackerFileId) {
-    setSaveStatus('error', 'Not connected \u2014 tap Load, your edits are not saved yet');
-    showToast('Tap Load first to connect');
+  const connected = await ensureConnected();
+  if (!connected) {
+    setSaveStatus('error', 'Not connected \u2014 will retry on your next edit');
+    showToast('\u26A0\uFE0F Could not connect to Drive \u2014 will retry automatically');
     return false;
   }
   // Coalesce rapid successive saves (e.g. two quick taps) into one write —
@@ -715,7 +767,6 @@ async function saveTracker() {
 // yes/no. Reuses saveTracker() rather than duplicating the write logic, so
 // there's still only one place that actually talks to Drive.
 async function manualSave() {
-  if (!gdriveToken || !trackerFileId) { showToast('Tap Load first to connect'); return; }
   const ok = await saveTracker();
   if (ok) showToast('\u2705 Saved');
 }
