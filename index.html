@@ -232,7 +232,7 @@ body {
 </div>
 
 <div style="text-align:center;margin-bottom:16px;">
-  <span onclick="importFromClientRecords()" style="font-size:11px;color:rgba(255,255,255,0.45);text-decoration:underline;cursor:pointer;">Import existing Prospect/Client records</span>
+  <span onclick="openImportPicker()" style="font-size:11px;color:rgba(255,255,255,0.45);text-decoration:underline;cursor:pointer;">Import existing Prospect/Client records</span>
 </div>
 
 <div class="new-lead-card">
@@ -295,6 +295,23 @@ body {
     <div class="modal-btn-row">
       <button class="btn btn-ghost" onclick="closeLostModal()">Cancel</button>
       <button class="btn btn-primary" onclick="confirmMarkLost()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="importModal">
+  <div class="modal-box" style="max-width:440px;max-height:82vh;display:flex;flex-direction:column;">
+    <h3>Import from production</h3>
+    <input type="text" id="importSearchInput" placeholder="Search by company name..." oninput="setImportSearch(this.value)"
+      style="width:100%;padding:9px 10px;border-radius:8px;border:1.5px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:white;font-size:12.5px;margin-bottom:10px;font-family:'DM Sans',sans-serif;">
+    <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:6px;display:flex;justify-content:space-between;">
+      <span id="importCandidateCount">Loading...</span>
+      <span onclick="toggleSelectAllImport()" style="text-decoration:underline;cursor:pointer;">Select all shown</span>
+    </div>
+    <div id="importList" style="overflow-y:auto;flex:1;min-height:120px;max-height:340px;border-top:1px solid rgba(255,255,255,0.1);"></div>
+    <div class="modal-btn-row" style="margin-top:12px;">
+      <button class="btn btn-ghost" onclick="closeImportPicker()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmImportSelected()" id="importConfirmBtn">Import selected (0)</button>
     </div>
   </div>
 </div>
@@ -669,66 +686,135 @@ async function getProductionClientRecordsRows() {
   return XLSX.utils.sheet_to_json(ws, { header: 1 });
 }
 
-async function importFromClientRecords() {
+// Shared by the picker below — turns one Client Records row into a
+// Tracker prospect object. Kept as one function so there's only one place
+// that needs updating if the mapping ever changes.
+function mapRowToProspect(get, clientId) {
+  return {
+    id: uid(),
+    clientId: clientId,
+    company: get('Billing Entity'),
+    state: get('State') || 'WA',
+    bdm: bdmNameFromEmail(get('BDM Email')),
+    descriptor: get('Descriptor'),
+    streetAddress: get('Street Address'),
+    suburb: get('Suburb'),
+    postcode: get('Postcode'),
+    productInterest: get('Product Interest'),
+    currentSupplier: get('Current Supplier'),
+    estimatedVolumeLitres: '',
+    estimatedVolumePeriod: 'month',
+    contactName: get('Business Contact Name'),
+    contactRole: get('Business Contact Role'),
+    contactPhone: get('Business Contact Phone'),
+    contactEmail: get('Business Contact Email'),
+    contact2Name: get('KDM Name'),
+    contact2Role: get('KDM Role'),
+    contact2Phone: get('KDM Phone'),
+    contact2Email: get('KDM Email'),
+    contact3Label: get('Other Contact Label'),
+    contact3Name: get('Other Contact Name'),
+    contact3Phone: get('Other Contact Phone'),
+    contact3Email: get('Other Contact Email'),
+    status: inferStatusFromRecord(get),
+    activity: [{ date: todayStr(), type: 'note', text: 'Imported from existing Prospect/Client record' }],
+    nextFollowUp: null,
+    lostReason: null,
+    createdDate: (get('Created Date') || todayStr()).toString().slice(0, 10),
+  };
+}
+
+// =====================================================================
+// IMPORT PICKER — search production Client Records and choose exactly
+// which ones to bring in, one or many, rather than an all-or-nothing pull.
+// =====================================================================
+let _importCandidates = [];   // [{ clientId, company, state, get }] — not yet in the Tracker
+let _importSelected = new Set();
+let _importSearch = '';
+
+async function openImportPicker() {
+  document.getElementById('importModal').classList.add('open');
+  document.getElementById('importCandidateCount').textContent = 'Loading...';
+  document.getElementById('importList').innerHTML = '';
+  document.getElementById('importSearchInput').value = '';
+  _importSearch = '';
+  _importSelected = new Set();
+
   try {
     const connected = await ensureConnected();
-    if (!connected) { showToast('\u26A0\uFE0F Could not connect to Drive'); return; }
-    showToast('Reading Client Records...');
+    if (!connected) throw new Error('Could not connect to Drive');
 
     const rows = await getProductionClientRecordsRows();
     const headers = rows[0] || [];
     const idx = {};
     headers.forEach((h, i) => { idx[h] = i; });
-
     const existingIds = new Set(prospects.map(p => p.clientId).filter(Boolean));
-    let imported = 0;
 
-    rows.slice(1).forEach(row => {
-      const get = (col) => (idx[col] !== undefined ? row[idx[col]] : '') || '';
-      const clientId = get('Client ID');
-      if (!clientId || existingIds.has(clientId)) return; // blank row, or already tracked
+    _importCandidates = rows.slice(1)
+      .map(row => {
+        const get = (col) => (idx[col] !== undefined ? row[idx[col]] : '') || '';
+        return { clientId: get('Client ID'), company: get('Billing Entity'), state: get('State') || '', get };
+      })
+      .filter(c => c.clientId && !existingIds.has(c.clientId) && c.company);
 
-      prospects.push({
-        id: uid(),
-        clientId: clientId,
-        company: get('Billing Entity'),
-        state: get('State') || 'WA',
-        bdm: bdmNameFromEmail(get('BDM Email')),
-        descriptor: get('Descriptor'),
-        streetAddress: get('Street Address'),
-        suburb: get('Suburb'),
-        postcode: get('Postcode'),
-        productInterest: get('Product Interest'),
-        currentSupplier: get('Current Supplier'),
-        estimatedVolumeLitres: '',
-        estimatedVolumePeriod: 'month',
-        contactName: get('Business Contact Name'),
-        contactRole: get('Business Contact Role'),
-        contactPhone: get('Business Contact Phone'),
-        contactEmail: get('Business Contact Email'),
-        contact2Name: get('KDM Name'),
-        contact2Role: get('KDM Role'),
-        contact2Phone: get('KDM Phone'),
-        contact2Email: get('KDM Email'),
-        contact3Label: get('Other Contact Label'),
-        contact3Name: get('Other Contact Name'),
-        contact3Phone: get('Other Contact Phone'),
-        contact3Email: get('Other Contact Email'),
-        status: inferStatusFromRecord(get),
-        activity: [{ date: todayStr(), type: 'note', text: 'Imported from existing Prospect/Client record' }],
-        nextFollowUp: null,
-        lostReason: null,
-        createdDate: (get('Created Date') || todayStr()).toString().slice(0, 10),
-      });
-      existingIds.add(clientId);
-      imported++;
-    });
-
-    if (imported > 0) { saveTracker(); render(); }
-    showToast(imported > 0 ? `\u2705 Imported ${imported} prospect${imported!==1?'s':''}` : 'Nothing new to import \u2014 already up to date');
+    renderImportPicker();
   } catch (e) {
-    showToast('\u26A0\uFE0F Import failed \u2014 ' + e.message);
+    document.getElementById('importCandidateCount').textContent = 'Error';
+    document.getElementById('importList').innerHTML = `<div class="empty-note">${escapeHtml(e.message)}</div>`;
   }
+}
+
+function setImportSearch(v) {
+  _importSearch = (v || '').trim().toLowerCase();
+  renderImportPicker();
+}
+
+function toggleImportSelection(clientId) {
+  if (_importSelected.has(clientId)) _importSelected.delete(clientId);
+  else _importSelected.add(clientId);
+  renderImportPicker();
+}
+
+function toggleSelectAllImport() {
+  const shown = _importCandidates.filter(c => !_importSearch || c.company.toLowerCase().includes(_importSearch));
+  const allSelected = shown.length > 0 && shown.every(c => _importSelected.has(c.clientId));
+  shown.forEach(c => { if (allSelected) _importSelected.delete(c.clientId); else _importSelected.add(c.clientId); });
+  renderImportPicker();
+}
+
+function renderImportPicker() {
+  const shown = _importCandidates.filter(c => !_importSearch || c.company.toLowerCase().includes(_importSearch));
+  document.getElementById('importCandidateCount').textContent = `${shown.length} available`;
+  document.getElementById('importList').innerHTML = shown.length
+    ? shown.map(c => `
+      <div onclick="toggleImportSelection('${c.clientId}')" style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid rgba(255,255,255,0.06);cursor:pointer;">
+        <input type="checkbox" ${_importSelected.has(c.clientId)?'checked':''} style="pointer-events:none;flex-shrink:0;">
+        <div>
+          <div style="font-size:13px;font-weight:600;">${escapeHtml(c.company)}</div>
+          <div style="font-size:10px;opacity:0.5;">${escapeHtml(c.state)} \u00b7 ${escapeHtml(c.clientId)}</div>
+        </div>
+      </div>`).join('')
+    : `<div class="empty-note">${_importSearch ? 'No matches' : 'Nothing left to import \u2014 already up to date'}</div>`;
+  document.getElementById('importConfirmBtn').textContent = `Import selected (${_importSelected.size})`;
+}
+
+function closeImportPicker() {
+  document.getElementById('importModal').classList.remove('open');
+}
+
+function confirmImportSelected() {
+  if (_importSelected.size === 0) { showToast('Select at least one to import'); return; }
+  let count = 0;
+  _importCandidates.forEach(c => {
+    if (_importSelected.has(c.clientId)) {
+      prospects.push(mapRowToProspect(c.get, c.clientId));
+      count++;
+    }
+  });
+  saveTracker();
+  render();
+  closeImportPicker();
+  showToast(`\u2705 Imported ${count} prospect${count!==1?'s':''}`);
 }
 
 // Drive keeps a folder's ID stable across a parent change — this is a
@@ -1499,4 +1585,3 @@ render();
 </script>
 </body>
 </html>
-
