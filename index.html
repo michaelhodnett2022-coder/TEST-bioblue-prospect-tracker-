@@ -626,21 +626,56 @@ function inferStatusFromRecord(get) {
 // have a full Prospect/Client record from before the Tracker existed.
 // Matches on Client ID to skip anything already present, so running this
 // more than once never creates duplicates.
+// Points at your REAL production Drive folder — deliberately separate from
+// GDRIVE_FOLDER_NAME, which is swapped to the test root everywhere else in
+// this file. Only ever used for the one read-only import path below.
+const PRODUCTION_FOLDER_NAME = 'BioBlue Audits';
+
+// Read-only, and deliberately the opposite of getOrCreateFolder's
+// find-or-create behaviour: if BioBlue Audits, ADMIN DATA, or the Client
+// Records file itself isn't found exactly where expected, this throws and
+// stops — it must never create anything in production, under any
+// circumstance. Nothing in this function writes anywhere.
+async function getProductionClientRecordsRows() {
+  const rf = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=name='${PRODUCTION_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id)`,
+    { headers: { Authorization: `Bearer ${gdriveToken}` } }
+  );
+  const rd = await rf.json();
+  if (!rd.files || !rd.files.length) throw new Error(`Production folder "${PRODUCTION_FOLDER_NAME}" not found`);
+  const rootId = rd.files[0].id;
+
+  const af = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=name='ADMIN DATA - DO NOT REMOVE' and '${rootId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id)`,
+    { headers: { Authorization: `Bearer ${gdriveToken}` } }
+  );
+  const ad = await af.json();
+  if (!ad.files || !ad.files.length) throw new Error('Production ADMIN DATA folder not found');
+  const adminId = ad.files[0].id;
+
+  const sf = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=name='${CLIENT_RECORDS_NAME}' and '${adminId}' in parents and trashed=false&fields=files(id)`,
+    { headers: { Authorization: `Bearer ${gdriveToken}` } }
+  );
+  const sd = await sf.json();
+  if (!sd.files || !sd.files.length) throw new Error('Production Client Records file not found');
+
+  const dl = await fetch(`https://www.googleapis.com/drive/v3/files/${sd.files[0].id}?alt=media`, { headers: { Authorization: `Bearer ${gdriveToken}` } });
+  if (!dl.ok) throw new Error('Download failed (' + dl.status + ')');
+  const ab = await dl.arrayBuffer();
+  const wb = XLSX.read(new Uint8Array(ab), { type: 'array' });
+  const ws = wb.Sheets['Client Records'];
+  if (!ws) throw new Error('Client Records sheet not found in production file');
+  return XLSX.utils.sheet_to_json(ws, { header: 1 });
+}
+
 async function importFromClientRecords() {
   try {
     const connected = await ensureConnected();
     if (!connected) { showToast('\u26A0\uFE0F Could not connect to Drive'); return; }
     showToast('Reading Client Records...');
 
-    const rootId = await getDriveRootId();
-    const sheetId = await getOrCreateAdminSheetId(rootId);
-    const dl = await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}?alt=media`, { headers: { Authorization: `Bearer ${gdriveToken}` } });
-    if (!dl.ok) throw new Error('Download failed (' + dl.status + ')');
-    const ab = await dl.arrayBuffer();
-    const wb = XLSX.read(new Uint8Array(ab), { type: 'array' });
-    const ws = wb.Sheets['Client Records'];
-    if (!ws) throw new Error('Client Records sheet not found');
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+    const rows = await getProductionClientRecordsRows();
     const headers = rows[0] || [];
     const idx = {};
     headers.forEach((h, i) => { idx[h] = i; });
@@ -1464,3 +1499,4 @@ render();
 </script>
 </body>
 </html>
+
