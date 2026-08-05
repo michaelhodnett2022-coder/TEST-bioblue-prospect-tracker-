@@ -231,6 +231,10 @@ body {
   </select>
 </div>
 
+<div style="text-align:center;margin-bottom:16px;">
+  <span onclick="importFromClientRecords()" style="font-size:11px;color:rgba(255,255,255,0.45);text-decoration:underline;cursor:pointer;">Import existing Prospect/Client records</span>
+</div>
+
 <div class="new-lead-card">
   <div class="new-lead-title" id="newLeadToggle" onclick="toggleNewLead()">
     <span>+ Add new lead</span><span id="newLeadChevron">&#9662;</span>
@@ -597,6 +601,99 @@ async function mintClientId(p) {
   });
 
   return newId;
+}
+
+function bdmNameFromEmail(email) {
+  const found = Object.entries(BDM_EMAILS).find(([, e]) => e === (email || '').trim());
+  return found ? found[0] : 'Michael Hodnett';
+}
+
+// Best-effort status inference from the old checkbox flags. Every row in
+// Client Records already has 'Prospect ✓' set (it's written the moment
+// the form is submitted), so that alone can't distinguish stages — the
+// real signal is which of Quote Sent / Customer are also set. This is
+// necessarily approximate: the old data model never tracked Contacted vs
+// Engaged as separate stages, so anything imported lands at Engaged or
+// later. Every field on an imported card is editable afterward the same
+// as any other, so a wrong guess here is a one-tap fix, not a re-import.
+function inferStatusFromRecord(get) {
+  if ((get('Customer \u2713') || '').trim()) return 'Won';
+  if ((get('Quote Sent \u2713') || '').trim()) return 'Quoted';
+  return 'Engaged';
+}
+
+// One-time (but safely re-runnable) backfill for prospects that already
+// have a full Prospect/Client record from before the Tracker existed.
+// Matches on Client ID to skip anything already present, so running this
+// more than once never creates duplicates.
+async function importFromClientRecords() {
+  try {
+    const connected = await ensureConnected();
+    if (!connected) { showToast('\u26A0\uFE0F Could not connect to Drive'); return; }
+    showToast('Reading Client Records...');
+
+    const rootId = await getDriveRootId();
+    const sheetId = await getOrCreateAdminSheetId(rootId);
+    const dl = await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}?alt=media`, { headers: { Authorization: `Bearer ${gdriveToken}` } });
+    if (!dl.ok) throw new Error('Download failed (' + dl.status + ')');
+    const ab = await dl.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(ab), { type: 'array' });
+    const ws = wb.Sheets['Client Records'];
+    if (!ws) throw new Error('Client Records sheet not found');
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+    const headers = rows[0] || [];
+    const idx = {};
+    headers.forEach((h, i) => { idx[h] = i; });
+
+    const existingIds = new Set(prospects.map(p => p.clientId).filter(Boolean));
+    let imported = 0;
+
+    rows.slice(1).forEach(row => {
+      const get = (col) => (idx[col] !== undefined ? row[idx[col]] : '') || '';
+      const clientId = get('Client ID');
+      if (!clientId || existingIds.has(clientId)) return; // blank row, or already tracked
+
+      prospects.push({
+        id: uid(),
+        clientId: clientId,
+        company: get('Billing Entity'),
+        state: get('State') || 'WA',
+        bdm: bdmNameFromEmail(get('BDM Email')),
+        descriptor: get('Descriptor'),
+        streetAddress: get('Street Address'),
+        suburb: get('Suburb'),
+        postcode: get('Postcode'),
+        productInterest: get('Product Interest'),
+        currentSupplier: get('Current Supplier'),
+        estimatedVolumeLitres: '',
+        estimatedVolumePeriod: 'month',
+        contactName: get('Business Contact Name'),
+        contactRole: get('Business Contact Role'),
+        contactPhone: get('Business Contact Phone'),
+        contactEmail: get('Business Contact Email'),
+        contact2Name: get('KDM Name'),
+        contact2Role: get('KDM Role'),
+        contact2Phone: get('KDM Phone'),
+        contact2Email: get('KDM Email'),
+        contact3Label: get('Other Contact Label'),
+        contact3Name: get('Other Contact Name'),
+        contact3Phone: get('Other Contact Phone'),
+        contact3Email: get('Other Contact Email'),
+        status: inferStatusFromRecord(get),
+        activity: [{ date: todayStr(), type: 'note', text: 'Imported from existing Prospect/Client record' }],
+        nextFollowUp: null,
+        lostReason: null,
+        createdDate: (get('Created Date') || todayStr()).toString().slice(0, 10),
+      });
+      existingIds.add(clientId);
+      imported++;
+    });
+
+    if (imported > 0) { saveTracker(); render(); }
+    showToast(imported > 0 ? `\u2705 Imported ${imported} prospect${imported!==1?'s':''}` : 'Nothing new to import \u2014 already up to date');
+  } catch (e) {
+    showToast('\u26A0\uFE0F Import failed \u2014 ' + e.message);
+  }
 }
 
 // Drive keeps a folder's ID stable across a parent change — this is a
